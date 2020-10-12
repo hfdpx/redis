@@ -133,10 +133,12 @@ unsigned int dictGenHashFunction(const void *key, int len) {
 /* And a case insensitive hash function (based on djb hash) */
 unsigned int dictGenCaseHashFunction(const unsigned char *buf, int len) {
     unsigned int hash = (unsigned int) dict_hash_function_seed;
+
     while (len--)
         hash = ((hash << 5) + hash) + (tolower(*buf++)); /* hash * 33 + c */
     return hash;
 }
+
 /* ----------------------------- API implementation ------------------------- */
 
 /*

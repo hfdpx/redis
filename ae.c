@@ -31,7 +31,7 @@ static void aeGetTime(long *seconds, long *milliseconds) {
 /*
  * 初始化事件处理器状态
  */
-aeEventLoop *aeCreateEventLoop(int setsize) {
+aeEventLoop *aeCreateEventLoop(int setsize) { // 创建一个EventLoop,我只是稍微有那么点好奇,究竟这些个玩意到底是怎么实现的.
     aeEventLoop *eventLoop;
     int i;
 

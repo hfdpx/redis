@@ -19,6 +19,11 @@
 #include <sys/resource.h>
 #include <sys/utsname.h>
 #include <locale.h>
+#include "db.h"
+#include "object.h"
+#include "util.h"
+
+struct sharedObjectsStruct shared;
 
 /*=============================== Function declariton =======================*/
 void setCommand(redisClient *c);
@@ -30,8 +35,8 @@ void getCommand(redisClient *c);
 struct redisServer server; /* server global state */
 
 struct redisCommand redisCommandTable[] = {
-        {"get", getCommand, 2,  "r",  0, NULL, 1, 1, 1, 0, 0},
-        {"set", setCommand, -3, "wm", 0, NULL, 1, 1, 1, 0, 0},
+        {"get", getCommand, 2,  "r",  0},
+        {"set", setCommand, -3, "wm", 0},
 };
 
 /*================================ Dict ===================================== */
@@ -75,6 +80,20 @@ dictType commandTableDictType = {
         dictSdsKeyCaseCompare,     /* key compare */
         dictSdsDestructor,         /* key destructor */
         NULL                       /* val destructor */
+};
+
+void dictRedisObjectDestructor(void *privdata, void *val) {
+    if (val == NULL) return; /* Values of swapped out keys as set to NULL */
+    decrRefCount(val); // 减少一个引用
+}
+
+dictType dbDictType = {
+        dictSdsHash,                /* hash function */
+        NULL,                       /* key dup */
+        NULL,                       /* val dup */
+        dictSdsKeyCompare,          /* key compare */
+        dictSdsDestructor,          /* key destructor */
+        dictRedisObjectDestructor   /* val destructor */
 };
 
 /*================================== Commands ================================ */
@@ -176,6 +195,8 @@ void call(redisClient *c, int flags) {
  */
 int processCommand(redisClient *c) {
     // 查找命令，并进行命令合法性检查，以及命令参数个数检查
+
+    char *cmd = c->argv[0]->ptr;
     c->cmd = c->lastcmd = lookupCommand(c->argv[0]->ptr);
     call(c, REDIS_CALL_FULL);
 }
@@ -194,6 +215,97 @@ void setupSignalHandlers(void) {
     act.sa_flags = 0;
     act.sa_handler = sigtermHandler;
     sigaction(SIGTERM, &act, NULL);
+
+}
+
+/* =========================== Server initialization ======================== */
+void createSharedObjects(void) {
+    int j;
+    // 常用的回复
+    shared.crlf = createObject(REDIS_STRING, sdsnew("\r\n"));
+    shared.ok = createObject(REDIS_STRING, sdsnew("+OK\r\n"));
+    shared.err = createObject(REDIS_STRING, sdsnew("-ERR\r\n"));
+    shared.emptybulk = createObject(REDIS_STRING, sdsnew("$0\r\n\r\n"));
+    shared.czero = createObject(REDIS_STRING, sdsnew(":0\r\n"));
+    shared.cone = createObject(REDIS_STRING, sdsnew(":1\r\n"));
+    shared.cnegone = createObject(REDIS_STRING, sdsnew(":-1\r\n"));
+    shared.nullbulk = createObject(REDIS_STRING, sdsnew("$-1\r\n"));
+    shared.nullmultibulk = createObject(REDIS_STRING, sdsnew("*-1\r\n"));
+    shared.emptymultibulk = createObject(REDIS_STRING, sdsnew("*0\r\n"));
+    shared.pong = createObject(REDIS_STRING, sdsnew("+PONG\r\n"));
+    shared.queued = createObject(REDIS_STRING, sdsnew("+QUEUED\r\n"));
+    shared.emptyscan = createObject(REDIS_STRING, sdsnew("*2\r\n$1\r\n0\r\n*0\r\n"));
+
+    // 常用错误回复
+    shared.wrongtypeerr = createObject(REDIS_STRING, sdsnew(
+            "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"));
+    shared.nokeyerr = createObject(REDIS_STRING, sdsnew(
+            "-ERR no such key\r\n"));
+    shared.syntaxerr = createObject(REDIS_STRING, sdsnew(
+            "-ERR syntax error\r\n"));
+    shared.sameobjecterr = createObject(REDIS_STRING, sdsnew(
+            "-ERR source and destination objects are the same\r\n"));
+    shared.outofrangeerr = createObject(REDIS_STRING, sdsnew(
+            "-ERR index out of range\r\n"));
+    shared.noscripterr = createObject(REDIS_STRING, sdsnew(
+            "-NOSCRIPT No matching script. Please use EVAL.\r\n"));
+    shared.loadingerr = createObject(REDIS_STRING, sdsnew(
+            "-LOADING Redis is loading the dataset in memory\r\n"));
+    shared.slowscripterr = createObject(REDIS_STRING, sdsnew(
+            "-BUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.\r\n"));
+    shared.masterdownerr = createObject(REDIS_STRING, sdsnew(
+            "-MASTERDOWN Link with MASTER is down and slave-serve-stale-data is set to 'no'.\r\n"));
+    shared.bgsaveerr = createObject(REDIS_STRING, sdsnew(
+            "-MISCONF Redis is configured to save RDB snapshots, but is currently not able to persist on disk. Commands that may modify the data set are disabled. Please check Redis logs for details about the error.\r\n"));
+    shared.roslaveerr = createObject(REDIS_STRING, sdsnew(
+            "-READONLY You can't write against a read only slave.\r\n"));
+    shared.noautherr = createObject(REDIS_STRING, sdsnew(
+            "-NOAUTH Authentication required.\r\n"));
+    shared.oomerr = createObject(REDIS_STRING, sdsnew(
+            "-OOM command not allowed when used memory > 'maxmemory'.\r\n"));
+    shared.execaborterr = createObject(REDIS_STRING, sdsnew(
+            "-EXECABORT Transaction discarded because of previous errors.\r\n"));
+    shared.noreplicaserr = createObject(REDIS_STRING, sdsnew(
+            "-NOREPLICAS Not enough good slaves to write.\r\n"));
+    shared.busykeyerr = createObject(REDIS_STRING, sdsnew(
+            "-BUSYKEY Target key name already exists.\r\n"));
+
+    // 常用字符
+    shared.space = createObject(REDIS_STRING, sdsnew(" "));
+    shared.colon = createObject(REDIS_STRING, sdsnew(":"));
+    shared.plus = createObject(REDIS_STRING, sdsnew("+"));
+
+    // 常用select命令
+    for (j = 0; j < REDIS_SHARED_SELECT_CMDS; j++) {
+        char dictid_str[64];
+        int dictid_len;
+
+        dictid_len = ll2string(dictid_str, sizeof(dictid_str), j);
+        shared.select[j] = createObject(REDIS_STRING,
+                                        sdscatprintf(sdsempty(),
+                                                     "*2\r\n$6\r\nSELECT\r\n$%d\r\n%s\r\n",
+                                                     dictid_len, dictid_str));
+    }
+
+    // 常用命令
+    shared.del = createStringObject("DEL", 3);
+    shared.rpop = createStringObject("RPOP", 4);
+    shared.lpop = createStringObject("LPOP", 4);
+    shared.lpush = createStringObject("LPUSH", 5);
+
+    // 常用整数
+    for (j = 0; j < REDIS_SHARED_INTEGERS; j++) {
+        shared.integers[j] = createObject(REDIS_STRING, (void *) (long) j);
+        shared.integers[j]->encoding = REDIS_ENCODING_INT;
+    }
+
+    // 常用长度bulk或者multi bulk回复
+    for (j = 0; j < REDIS_SHARED_BULKHDR_LEN; j++) {
+        shared.mbulkhdr[j] = createObject(REDIS_STRING,
+                                          sdscatprintf(sdsempty(), "*%d\r\n", j));
+        shared.bulkhdr[j] = createObject(REDIS_STRING,
+                                         sdscatprintf(sdsempty(), "$%d\r\n", j));
+    }
 
 }
 
@@ -288,8 +400,30 @@ int prepareForShutdown(int flags) {
     return REDIS_OK;
 }
 
+/*
+ * 检查客户端是否已经超时,如果超时就关闭客户端,并返回1
+ */
+int clientsCronHandleTimeout(redisClient *c) {
+    // todo
+    /* 客户端没有被关闭 */
+    return 0;
+}
+
 void clientsCron(void) {
     // todo
+    int numclients = listLength(server.clients); // 客户端的数量
+    int iterations = numclients / (server.hz * 10); // 要处理的客户端的数量
+
+    while (listLength(server.clients) && iterations--) {
+        redisClient *c;
+        listNode *head;
+        // 翻转列表,然后取出表头元素,这样以来上一个被处理的客户端就会被放到表头
+        // 另外,如果程序要删除当前客户端,那么只需要删除表头元素就可以了.
+        listRotate(server.clients);
+        head = listFirst(server.clients);
+        c = listNodeValue(head);
+        if (clientsCronHandleTimeout(c)) continue;
+    }
 }
 
 int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
@@ -308,7 +442,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 
 void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask);
 
-
+// 初始化服务器
 void initServer() {
     int j;
     // 忽略SIGPIPE以及SIGHUP两个信号
@@ -324,6 +458,7 @@ void initServer() {
 
     //初始化事件处理器状态
     server.el = aeCreateEventLoop(server.maxclients + REDIS_EVENTLOOP_FDSET_INCR);
+    server.db = zmalloc(sizeof(redisDb) * server.dbnum); // 创建数据库
 
     // 打开 TCP 监听端口,用于等待客户端的命令请求
     if (server.port != 0 &&
@@ -332,6 +467,12 @@ void initServer() {
     }
 
     // ipfd_count 用于记录监听描述符的个数,一般而言,只有一个
+
+    for (j = 0; j < server.dbnum; j++) {
+        server.db[j].dict = dictCreate(&dbDictType, NULL);
+        server.db[j].id = j;
+    }
+
 
     // 为serverCron() 创建定时事件
     if (aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {

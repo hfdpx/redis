@@ -16,6 +16,7 @@
 #include <syslog.h>
 #include <netinet/in.h>
 #include <signal.h>
+#include <assert.h>
 #include "anet.h"
 #include "ae.h"
 #include "sds.h"
@@ -45,20 +46,29 @@
 #define REDIS_MBULK_BIG_ARG     (1024*32)
 #define REDIS_MIN_RESERVED_FDS 32
 #define REDIS_EVENTLOOP_FDSET_INCR (REDIS_MIN_RESERVED_FDS+96) //eventloop中fd增量
+#define REDIS_EVENTLOOP_FDSET_INCR (REDIS_MIN_RESERVED_FDS+96)
 #define REDIS_MAX_CLIENTS 10000 /* 最大所支持的用户数目 */
 
 /* Static server configuration */
-#define REDIS_DEFAULT_HZ        10   /* 服务器默认运行频率 */
+#define REDIS_DEFAULT_HZ        10
 #define REDIS_SERVERPORT        6379 /* TCP port */
 #define REDIS_TCP_BACKLOG       511  // TCP连接队列的大小，该队列用来存放待处理的请求，当服务器处理请求之后，将其从队列中移除，Linux系统中通过net/core/somaxconn参选来限制，Linux默认是128，如果队列满了，则后续的请求会被直接丢弃，这种情况下，会限制redis的性能发挥，建议修改为2048，该参数就是redis的backlog，最终全连接队列的大小由backlog和somaxconn两个值中最小的决定，所以要修改TCP最终全连接队列的大小的话，得同时修改这两个值才能起作用，关于TCP的全连接和半连接队列请参考:https://juejin.im/post/6844904071367753736#heading-10
 #define REDIS_BINDADDR_MAX        16 //绑定地址的最大数量
 #define REDIS_IP_STR_LEN INET6_ADDRSTRLEN
 #define REDIS_DEFAULT_DBNUM     16 //默认支持的数据库数量
 #define REDIS_DEFAULT_TCP_KEEPALIVE 0 //TCP保活检测，60代表server端每60秒发起一次ack请求来检查client是否挂掉，对于无响应的client会关闭其连接，如果设置为0，则不会进行保活检测
+#define REDIS_SHARED_SELECT_CMDS 10
+#define REDIS_SHARED_INTEGERS 10000
+#define REDIS_SHARED_BULKHDR_LEN 32
 
 /* Client request types */
 #define REDIS_REQ_INLINE    1
 #define REDIS_REQ_MULTIBULK 2 /* 多条查询 */
+
+
+/* Units */
+#define UNIT_SECONDS 0
+#define UNIT_MILLISECONDS 1
 
 /* 对象编码 */
 #define REDIS_ENCODING_RAW 0     /* Raw representation */
@@ -87,6 +97,14 @@
 #define REDIS_CALL_PROPAGATE 4
 #define REDIS_CALL_FULL (REDIS_CALL_SLOWLOG | REDIS_CALL_STATS | REDIS_CALL_PROPAGATE)
 
+
+/*====================================== define marco ===================================*/
+/* 用于判断objptr是否为sds */
+#define sdsEncodedObject(objptr) (objptr->encoding == REDIS_ENCODING_RAW || objptr->encoding == REDIS_ENCODING_EMBSTR)
+
+/*
+* Redis 对象
+*/
 #define REDIS_LRU_BITS 24
 
 //
@@ -150,6 +168,8 @@ typedef struct redisClient {
     long bulklen; // 命令内容的长度
 
     list *reply; // 回复链表
+
+    int sentlen; // 已发送字节,处理short write时使用
 
     unsigned long reply_bytes; // 回复链表中对象的总大小
 
@@ -225,19 +245,23 @@ struct redisCommand {
     // 实际 FLAG
     int flags;    /* The actual flags, obtained from the 'sflags' field. */
 
-    // 从命令中判断命令的键参数。在 Redis 集群转向时使用。
-    redisGetKeysProc *getkeys_proc;
+    // 做了一些简化,删除了一些不常用的域
+};
 
-    /* What keys should be loaded in background when calling this command? */
-    // 指定哪些参数是 key
-    int firstkey; /* The first argument that's a key (0 = no keys) */
-    int lastkey;  /* The last argument that's a key */
-    int keystep;  /* The step between first and last key */
 
-    // 统计信息
-    // microseconds 记录了命令执行耗费的总毫微秒数
-    // calls 是命令被执行的总次数
-    long long microseconds, calls;
+// 通过复用来减少内存碎片，以及减少操作耗时的共享对象
+struct sharedObjectsStruct {
+    robj *crlf, *ok, *err, *emptybulk, *czero, *cone, *cnegone, *pong, *space,
+            *colon, *nullbulk, *nullmultibulk, *queued,
+            *emptymultibulk, *wrongtypeerr, *nokeyerr, *syntaxerr, *sameobjecterr,
+            *outofrangeerr, *noscripterr, *loadingerr, *slowscripterr, *bgsaveerr,
+            *masterdownerr, *roslaveerr, *execaborterr, *noautherr, *noreplicaserr,
+            *busykeyerr, *oomerr, *plus, *del, *rpop, *lpop,
+            *lpush, *emptyscan, *minstring, *maxstring,
+            *select[REDIS_SHARED_SELECT_CMDS],
+            *integers[REDIS_SHARED_INTEGERS],
+            *mbulkhdr[REDIS_SHARED_BULKHDR_LEN], /* "*<value>\r\n" */
+    *bulkhdr[REDIS_SHARED_BULKHDR_LEN];  /* "$<value>\r\n" */
 };
 
 /* api */

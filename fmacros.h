@@ -1,7 +1,7 @@
 #ifndef _REDIS_FMACRO_H
 #define _REDIS_FMACRO_H
 
-#define _DEFAULT_SOURCE
+//#define _DEFAULT_SOURCE
 
 #define _GNU_SOURCE
 
