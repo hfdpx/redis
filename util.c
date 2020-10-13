@@ -11,9 +11,23 @@
 
 #include "util.h"
 
-/* Convert a string into a long long. Returns 1 if the string could be parsed
-* into a (non-overflowing) long long, 0 otherwise. The value will be set to
-* the parsed value when appropriate. */
+#define LOG_SIZE 1024
+
+/*
+ * 一个简易的日志函数.
+ */
+void mlog(const char *fileName, int lineNum, const char *func, const char *log_str, ...) {
+	va_list vArgList; // 定义一个va_list型的变量,这个变量是指向参数的指针.
+	char buf[LOG_SIZE];
+	va_start(vArgList, log_str); // 用va_start宏初始化变量,这个宏的第二个参数是第一个可变参数的前一个参数,是一个固定的参数
+	vsnprintf(buf, LOG_SIZE, log_str, vArgList); // 注意,不要漏掉前面的_
+	va_end(vArgList);  // 用va_end宏结束可变参数的获取
+	printf("%s:%d:%s --> %s\n", fileName, lineNum, func, buf);
+}
+
+/* 将一个字符串类型的数转换为longlong类型.
+* 如果可以转换的话,返回1,否则的话,返回0
+*/
 int string2ll(const char *s, size_t slen, long long *value) {
     const char *p = s;
     size_t plen = 0;
@@ -42,9 +56,9 @@ int string2ll(const char *s, size_t slen, long long *value) {
     /* First digit should be 1-9, otherwise the string should just be 0. */
     if (p[0] >= '1' && p[0] <= '9') {
         v = p[0] - '0';
-        p++;
-        plen++;
-    } else if (p[0] == '0' && slen == 1) {
+		p++; plen++;
+	}
+	else if (p[0] == '0' && slen == 1) {
         *value = 0;
         return 1;
     } else {

@@ -60,6 +60,7 @@
 #define REDIS_SHARED_SELECT_CMDS 10
 #define REDIS_SHARED_INTEGERS 10000
 #define REDIS_SHARED_BULKHDR_LEN 32
+#define REDIS_MAXIDLETIME       0       /* default client timeout: infinite */
 
 /* Client request types */
 #define REDIS_REQ_INLINE    1
@@ -177,6 +178,8 @@ typedef struct redisClient {
 
     char buf[REDIS_REPLY_CHUNK_BYTES];
 
+    time_t lastinteraction; // 客户端最后一次和服务器互动的时间
+
 } redisClient;
 
 
@@ -218,6 +221,10 @@ struct redisServer {
 
     /* Limits */
     int maxclients;      // Max number of simultaneous clients
+    int maxidletime; // 客户端的最大空转时间
+
+    time_t unixtime; // 记录时间
+    long long mstime; // 这个精度要高一些
 };
 
 
@@ -242,8 +249,7 @@ struct redisCommand {
     // 字符串表示的 FLAG
     char *sflags; /* Flags as string representation, one char per flag. */
 
-    // 实际 FLAG
-    int flags;    /* The actual flags, obtained from the 'sflags' field. */
+    int flags; // 实际flag
 
     // 做了一些简化,删除了一些不常用的域
 };
@@ -266,5 +272,7 @@ struct sharedObjectsStruct {
 
 /* api */
 int processCommand(redisClient *c);
+
+void freeClient(redisClient *c);
 
 #endif

@@ -305,7 +305,7 @@ redisClient *createClient(int fd) {
     c->argc = 0; // 命令参数的数量
     c->argv = NULL; // 命令参数
     c->cmd = c->lastcmd = NULL; // 当前执行的命令和最近一次执行的命令
-
+    c->lastinteraction = server.unixtime; // 最后一次互动时间
     c->bulklen = -1; // 读入的参数的长度
     c->multibulklen = 0; // 查询缓冲区中未读入的命令内容数量
 
@@ -394,7 +394,7 @@ int processInlineBuffer(redisClient *c) {
         return REDIS_ERR;
     }
 
-    /* 处理\r\n */
+    // 处理\r\n
     if (newline && newline != c->querybuf && *(newline - 1) == '\r')
         newline--;
 
@@ -410,7 +410,7 @@ int processInlineBuffer(redisClient *c) {
     argv = sdssplitargs(aux, &argc);
     sdsfree(aux);
 
-    /* 从缓冲区中删除已经读取了的内容,剩下的内容是未被读取的 */
+    // 从缓冲区中删除已经读取了的内容,剩下的内容是未被读取的
     sdsrange(c->querybuf, querylen + 2, -1);
 
     if (c->argv) free(c->argv);
@@ -457,7 +457,7 @@ int processMultibulkBuffer(redisClient *c) {
         ok = string2ll(c->querybuf + 1, newline - (c->querybuf + 1), &ll);
 
         // 参数数量之后的位置
-        // 比如对于 *3\r\n$3\r\n$SET\r\n... 来说，
+        // 比如对于 *3\r\n$3\r\n$SET\r\n... 来说,
         // pos 指向 *3\r\n$3\r\n$SET\r\n...
         //                ^
         //                |
@@ -526,7 +526,7 @@ int processMultibulkBuffer(redisClient *c) {
 /*
  * 清空所有命令参数
  */
-static void freeClientArgv(redisClient *c) {
+void freeClientArgv(redisClient *c) {
     int j;
     for (j = 0; j < c->argc; j++)
         decrRefCount(c->argv[j]);
@@ -591,7 +591,7 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     // 获取查询缓冲区当前内容的长度
     qblen = sdslen(c->querybuf);
 
-    /* 为查询缓冲区分配空间 */
+    // 为查询缓冲区分配空间
     c->querybuf = sdsMakeRoomFor(c->querybuf, readlen);
     // 读入内容到查询缓存
     nread = read(fd, c->querybuf + qblen, readlen);
@@ -600,17 +600,18 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         if (errno == EAGAIN) {
             nread = 0;
         } else {
-            //freeClient(c);
+            mylog("Reading from client: %s", strerror(errno));
             return;
         }
     } else if (nread == 0) { // 对方关闭了连接
-        // todo
-        //freeClient(c);
+        mylog("%s", "Client closed connection");
+        freeClient(c);
         return;
     }
 
     if (nread) {
         sdsIncrLen(c->querybuf, nread);
+        c->lastinteraction = server.unixtime; // 更新最后一次互动的时间
     } else {
         // 在 nread == -1 且 errno == EAGAIN 时运行
         server.current_client = NULL;
@@ -648,10 +649,10 @@ static void acceptCommonHandler(int fd, int flags) {
  * 创建一个 TCP 连接处理器
  */
 void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
-    int cport, cfd, max = 2;
+    int cport, cfd;
     char cip[REDIS_IP_STR_LEN];
 
-    while (max--) {
+    for (;;) {
         cfd = anetTcpAccept(server.neterr, fd, cip, sizeof(cip), &cport); // 获得ip地址以及端口号
         if (cfd == ANET_ERR) {
             break; // 出错直接终止循环
@@ -678,4 +679,35 @@ void addReplyErrorLength(redisClient *c, char *s, size_t len) {
  */
 void addReplyError(redisClient *c, char *err) {
     addReplyErrorLength(c, err, strlen(err));
+}
+
+/*
+ * 返回一个整数回复
+ *
+ * 格式为: 10086\r\n
+ */
+void addReplyLongLong(redisClient *c, long long ll) {
+    if (ll == 0)
+        addReply(c, shared.czero);
+    else if (ll == 1)
+        addReply(c, shared.cone);
+    else
+        addReplyLongLongWithPrefix(c, ll, ':');
+}
+
+/*
+* 返回一个c缓冲区作为回复
+*/
+void addReplyBulkBuffer(redisClient *c, void *p, size_t len) {
+    addReplyLongLongWithPrefix(c, len, '$');
+    addReplyString(c, p, len);
+    addReply(c, shared.crlf);
+}
+
+
+void addReplyMultiBulkLen(redisClient *c, long length) {
+    if (length < REDIS_SHARED_BULKHDR_LEN)
+        addReply(c, shared.mbulkhdr[length]);
+    else
+        addReplyLongLongWithPrefix(c, length, '*');
 }

@@ -22,6 +22,8 @@
 #include "db.h"
 #include "object.h"
 #include "util.h"
+#include "t_string.h"
+#include "networking.h"
 
 struct sharedObjectsStruct shared;
 
@@ -35,8 +37,24 @@ void getCommand(redisClient *c);
 struct redisServer server; /* server global state */
 
 struct redisCommand redisCommandTable[] = {
-        {"get", getCommand, 2,  "r",  0},
-        {"set", setCommand, -3, "wm", 0},
+        {"get",      getCommand,      2,  "r",  0},
+        {"set",      setCommand,      -3, "wm", 0},
+        {"setnx",    setnxCommand,    3,  "wm", 0},
+        {"setex",    setexCommand,    4,  "wm", 0},
+        {"psetex",   psetexCommand,   4,  "wm"},
+        {"append",   appendCommand,   3,  "wm", 0},
+        {"strlen",   strlenCommand,   2,  "r",  0},
+        {"exists",   existsCommand,   2,  "r",  0},
+        {"setrange", setrangeCommand, 4,  "wm", 0},
+        {"getrange", getrangeCommand, 4,  "r",  0},
+        {"substr",   getrangeCommand, 4,  "r",  0}, // 求子串居然是getrange的alias
+        {"incr",     incrCommand,     2,  "wm", 0},
+        {"decr",     decrCommand,     2,  "wm", 0},
+        {"mget",     mgetCommand,     -2, "r",  0},
+        {"mset",     msetCommand,     -3, "wm", 0},
+        {"msetnx",   msetnxCommand,   -3, "wm", 0},
+        {"incrby",   incrbyCommand,   3,  "wm", 0},
+        {"decrby",   decrbyCommand,   3,  "wm", 0},
 };
 
 /*================================ Dict ===================================== */
@@ -317,11 +335,12 @@ void initServerConfig() {
 
     // 服务器状态
     server.hz = REDIS_DEFAULT_HZ;
-    server.port = REDIS_SERVERPORT;
+    server.port = REDIS_SERVERPORT; // 6379号端口监听
     server.tcp_backlog = REDIS_TCP_BACKLOG;
     server.bindaddr_count = 0;
 
-    server.maxclients = REDIS_MAX_CLIENTS;
+    server.maxclients = REDIS_MAX_CLIENTS; // 默认情况下,最多支持 10000 个客户同时连接
+    server.maxidletime = REDIS_MAXIDLETIME;
     server.ipfd_count = 0;
     server.dbnum = REDIS_DEFAULT_DBNUM;
     server.tcpkeepalive = REDIS_DEFAULT_TCP_KEEPALIVE;
@@ -375,12 +394,12 @@ long long ustime(void) {
 }
 
 long long mstime(void) {
-    return ustime() / 1000; /* 1s = 1000 us */
+    return ustime() / 1000; // 1s = 1000 us
 }
 
 void updateCachedTime(void) {
-    //server.unixtime = time(NULL);
-    //server.mstime = mstime();
+    server.unixtime = time(NULL);
+    server.mstime = mstime();
 }
 
 /*================================== Shutdown =============================== */
@@ -401,11 +420,61 @@ int prepareForShutdown(int flags) {
 }
 
 /*
+* 释放所有事务状态相关的资源
+*/
+void freeClientMultiState(redisClient *c) {
+    // todo
+
+}
+
+
+/*
+ * 释放客户端
+ */
+void freeClient(redisClient *c) {
+    listNode *ln;
+    if (server.current_client == c) {
+        server.current_client = NULL;
+    }
+
+    sdsfree(c->querybuf);
+    c->querybuf = NULL;
+
+    // 关闭套接字,并从事件处理器中删除该套接字的事件
+    if (c->fd != -1) {
+        aeDeleteFileEvent(server.el, c->fd, AE_READABLE);
+        aeDeleteFileEvent(server.el, c->fd, AE_WRITABLE);
+        close(c->fd);
+    }
+
+    listRelease(c->reply); // 清空回复缓冲区
+    freeClientArgv(c); // 清空命令参数
+
+    // 从服务器的客户端链表中删除自身
+    if (c->fd != -1) {
+        ln = listSearchKey(server.clients, c);
+        assert(ln != NULL);
+        listDelNode(server.clients, ln);
+    }
+
+    if (c->name) decrRefCount(c->name);
+    zfree(c->argv);
+    freeClientMultiState(c); // 清除事务状态信息
+    zfree(c);
+}
+/* ======================= Cron: called every 100 ms ======================== */
+
+/*
  * 检查客户端是否已经超时,如果超时就关闭客户端,并返回1
  */
 int clientsCronHandleTimeout(redisClient *c) {
-    // todo
-    /* 客户端没有被关闭 */
+    time_t now = server.unixtime; // 获取当前的时间
+    if (now - c->lastinteraction > server.maxidletime) {
+        // 客户端最后一个与服务器通讯的时间已经超过了maxidletime
+        mylog("%s", "Closing idle client");
+        freeClient(c); // 关闭超时客户端
+        return 1;
+    }
     return 0;
 }
 
@@ -428,6 +497,7 @@ void clientsCron(void) {
 
 int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     int j;
+    updateCachedTime();
     // 服务器进程收到 SIGTERM 消息,关闭服务器
     if (server.shutdown_asap) {
         // 尝试关闭服务器
@@ -442,7 +512,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 
 void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask);
 
-// 初始化服务器
+
 void initServer() {
     int j;
     // 忽略SIGPIPE以及SIGHUP两个信号
@@ -455,6 +525,9 @@ void initServer() {
     // 初始化并创建数据结构
     server.clients = listCreate();
     server.clients_to_close = listCreate();
+
+    // 创建共享对象
+    createSharedObjects();
 
     //初始化事件处理器状态
     server.el = aeCreateEventLoop(server.maxclients + REDIS_EVENTLOOP_FDSET_INCR);
@@ -483,7 +556,7 @@ void initServer() {
     for (j = 0; j < server.ipfd_count; j++) {
         if (aeCreateFileEvent(server.el, server.ipfd[j], AE_READABLE,
                               acceptTcpHandler, NULL) == AE_ERR) {
-            printf("NO!\n");
+			mylog("%s", "createFileEvent error!");
             exit(-1);
         }
     }

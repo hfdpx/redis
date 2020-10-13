@@ -6,6 +6,7 @@
 #include <math.h>
 #include <ctype.h>
 
+extern struct sharedObjectsStruct shared;
 
 /* 
  * 创建一个 REDIS_ENCODING_EMBSTR 编码的字符对象
@@ -20,7 +21,6 @@ robj *createEmbeddedStringObject(char *ptr, size_t len) {
     o->encoding = REDIS_ENCODING_EMBSTR;
     o->ptr = sh + 1;
     o->refcount = 1;
-    //o->lru = LRU_CLOCK();
 
     sh->len = len;
     sh->free = 0;
@@ -268,6 +268,72 @@ robj *tryObjectEncoding(robj *o) {
         emb = createEmbeddedStringObject(s, sdslen(s));
         decrRefCount(o); // 手动地操纵引用计数真是一个麻烦事
         return emb;
+    }
+    return o;
+}
+
+/*
+ * 返回字符串对象中字符串值的长度
+ */
+size_t stringObjectLen(robj *o) {
+    assert(o->type == REDIS_STRING);
+
+    if (sdsEncodedObject(o)) {
+        return sdslen(o->ptr);
+    } else {
+        // 如果采用int编码,计算将这个值转换为字符串需要多少字节
+        char buf[32];
+        return ll2string(buf, 32, (long) o->ptr);
+    }
+}
+
+
+/*
+ * 尝试从对象o中取出long类型值
+ * 或者尝试将对象o中的值转换为long类型值
+ * 并将这个得出的整数值保存到*target上.
+ * 如果取出/转换成功的话,返回REDIS_OK.
+ * 否则返回REDIS_ERR,并向客户端发送一条msg出错回复.
+ */
+int getLongFromObjectOrReply(redisClient *c, robj *o, long long *target, const char *msg) {
+    long long value;
+    /* 先尝试以long long类型取出值 */
+    if (getLongLongFromObjectOrReply(c, o, &value, msg) != REDIS_OK) {
+        return REDIS_ERR;
+    }
+
+    /* 然后检查值是否在long类型的范围之内 */
+    if (value < LONG_MIN || value > LONG_MAX) {
+        if (msg != NULL)
+            addReplyError(c, (char *) msg);
+        else
+            addReplyError(c, "value is out of range");
+        return REDIS_ERR;
+    }
+    *target = value;
+    return REDIS_OK;
+}
+
+/*
+ * 根据传入的整数值,创建一个字符串对象
+ * 这个字符串的对象保存的可以是INT编码的long值
+ * 也可以是RAW编码的,被转换成字符串的long long值.
+ */
+robj *createStringObjectFromLongLong(long long value) {
+    robj *o;
+
+    // 如果value的大小在REDIS共享整数范围之内
+    if (value >= 0 && value < REDIS_SHARED_INTEGERS) {
+        incrRefCount(shared.integers[value]);
+        o = shared.integers[value];
+    } else { // 否则的话就要重新创建一个整数对象
+        if (value >= LONG_MIN && value <= LONG_MAX) {
+            o = createObject(REDIS_STRING, NULL);
+            o->encoding = REDIS_ENCODING_INT;
+            o->ptr = (void *) ((long) value);
+        } else {
+            o = createObject(REDIS_STRING, sdsfromlonglong(value));
+        }
     }
     return o;
 }

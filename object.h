@@ -31,8 +31,14 @@ int getLongLongFromObject(robj *o, long long *target);
 
 int getLongLongFromObjectOrReply(redisClient *c, robj *o, long long *target, const char *msg);
 
+int getLongFromObjectOrReply(redisClient *c, robj *o, long long *target, const char *msg);
+
 robj *tryObjectEncoding(robj *o);
 
 robj *getDecodedObject(robj *o);
+
+size_t stringObjectLen(robj *o);
+
+robj *createStringObjectFromLongLong(long long value);
 
 #endif
