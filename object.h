@@ -13,6 +13,8 @@ robj *createRawStringObject(char *ptr, size_t len);
 
 robj *createStringObject(char *ptr, size_t len);
 
+robj *createHashObject(void);
+
 robj *createObject(int type, void *ptr);
 
 void freeStringObject(robj *o);

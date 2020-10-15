@@ -147,3 +147,28 @@ void existsCommand(redisClient *c) {
         addReply(c, shared.czero);
     }
 }
+
+/*
+ * 为执行写入操作而从数据库中查找返回key的值.
+ * 如果key存在,那么返回key的值对象.
+ * 如果key不存在,那么向客户端发送reply参数中的信息,并返回NULL.
+ */
+robj *lookupKeyWriteOrReply(redisClient *c, robj *key, robj *reply) {
+    robj *o = lookupKeyWrite(c->db, key);
+    if (!o) addReply(c, reply);
+    return o;
+}
+
+/*
+ * 从数据库中删除给定的键,键的值,以及键的过期时间.
+ * 删除成功返回1,因为键不存在而导致删除失败时,返回0.
+ */
+int dbDelete(redisDb *db, robj *key) {
+    // 删除键值对
+    if (dictDelete(db->dict, key->ptr) == DICT_OK) {
+        // todo
+        return 1;
+    } else
+        return 0;
+}
+

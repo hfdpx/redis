@@ -11,6 +11,8 @@ robj *lookupKeyReadOrReply(redisClient *c, robj *key, robj *reply);
 
 robj *lookupKeyWrite(redisDb *db, robj *key);
 
+robj *lookupKeyWriteOrReply(redisClient *c, robj *key, robj *reply);
+
 void dbAdd(redisDb *db, robj *key, robj *val);
 
 void dbOverwrite(redisDb *db, robj *key, robj *val);
@@ -18,6 +20,8 @@ void dbOverwrite(redisDb *db, robj *key, robj *val);
 void setKey(redisDb *db, robj *key, robj *val);
 
 int selectDb(redisClient *c, int id);
+
+int dbDelete(redisDb *db, robj *key);
 
 robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o);
 

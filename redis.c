@@ -23,6 +23,7 @@
 #include "object.h"
 #include "util.h"
 #include "t_string.h"
+#include "t_hash.h"
 #include "networking.h"
 
 struct sharedObjectsStruct shared;
@@ -55,6 +56,16 @@ struct redisCommand redisCommandTable[] = {
         {"msetnx",   msetnxCommand,   -3, "wm", 0},
         {"incrby",   incrbyCommand,   3,  "wm", 0},
         {"decrby",   decrbyCommand,   3,  "wm", 0},
+        /* hashset command */
+        {"hexists",  hexistsCommand,  3,  "r",  0},
+        {"hset",     hsetCommand,     4,  "wm", 0},
+        {"hget",     hgetCommand,     3,  "r",  0},
+        {"hgetall",  hgetallCommand,  2,  "r",  0},
+        {"hmget",    hmgetCommand,    -3, "r",  0},
+        {"hmset",    hmsetCommand,    -4, "wm", 0},
+        {"hkeys",    hkeysCommand,    2,  "rS", 0},
+        {"hvals",    hvalsCommand,    2,  "rS", 0},
+        {"hlen",     hlenCommand,     2,  "r",  0},
 };
 
 /*================================ Dict ===================================== */
@@ -111,6 +122,56 @@ dictType dbDictType = {
         NULL,                       /* val dup */
         dictSdsKeyCompare,          /* key compare */
         dictSdsDestructor,          /* key destructor */
+        dictRedisObjectDestructor   /* val destructor */
+};
+
+unsigned int dictEncObjHash(const void *key) {
+    robj *o = (robj *) key;
+
+    if (sdsEncodedObject(o)) {
+        return dictGenHashFunction(o->ptr, sdslen((sds) o->ptr));
+    } else {
+        if (o->encoding == REDIS_ENCODING_INT) {
+            char buf[32];
+            int len;
+
+            len = ll2string(buf, 32, (long) o->ptr);
+            return dictGenHashFunction((unsigned char *) buf, len);
+        } else {
+            unsigned int hash;
+
+            o = getDecodedObject(o);
+            hash = dictGenHashFunction(o->ptr, sdslen((sds) o->ptr));
+            decrRefCount(o);
+            return hash;
+        }
+    }
+}
+
+int dictEncObjKeyCompare(void *privdata, const void *key1,
+                         const void *key2) {
+    robj *o1 = (robj *) key1, *o2 = (robj *) key2;
+    int cmp;
+
+    if (o1->encoding == REDIS_ENCODING_INT &&
+        o2->encoding == REDIS_ENCODING_INT)
+        return o1->ptr == o2->ptr;
+
+    o1 = getDecodedObject(o1);
+    o2 = getDecodedObject(o2);
+    cmp = dictSdsKeyCompare(privdata, o1->ptr, o2->ptr);
+    decrRefCount(o1);
+    decrRefCount(o2);
+    return cmp;
+}
+
+/* Hash type hash table (note that small hashes are represented with ziplists) */
+dictType hashDictType = {
+        dictEncObjHash,             /* hash function */
+        NULL,                       /* key dup */
+        NULL,                       /* val dup */
+        dictEncObjKeyCompare,       /* key compare */
+        dictRedisObjectDestructor,  /* key destructor */
         dictRedisObjectDestructor   /* val destructor */
 };
 
@@ -217,6 +278,7 @@ int processCommand(redisClient *c) {
     char *cmd = c->argv[0]->ptr;
     c->cmd = c->lastcmd = lookupCommand(c->argv[0]->ptr);
     call(c, REDIS_CALL_FULL);
+    return REDIS_OK;
 }
 
 
@@ -341,6 +403,7 @@ void initServerConfig() {
 
     server.maxclients = REDIS_MAX_CLIENTS; // 默认情况下,最多支持 10000 个客户同时连接
     server.maxidletime = REDIS_MAXIDLETIME;
+	server.hash_max_ziplist_value = REDIS_HASH_MAX_ZIPLIST_VALUE; // 压缩链表所能容忍的最大值
     server.ipfd_count = 0;
     server.dbnum = REDIS_DEFAULT_DBNUM;
     server.tcpkeepalive = REDIS_DEFAULT_TCP_KEEPALIVE;
@@ -556,7 +619,7 @@ void initServer() {
     for (j = 0; j < server.ipfd_count; j++) {
         if (aeCreateFileEvent(server.el, server.ipfd[j], AE_READABLE,
                               acceptTcpHandler, NULL) == AE_ERR) {
-			mylog("%s", "createFileEvent error!");
+            mylog("%s", "createFileEvent error!");
             exit(-1);
         }
     }

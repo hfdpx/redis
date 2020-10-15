@@ -56,4 +56,8 @@ void addReplyBulkBuffer(redisClient *c, void *p, size_t len);
 
 void addReplyMultiBulkLen(redisClient *c, long length);
 
+void addReplyBulkCBuffer(redisClient *c, void *p, size_t len);
+
+void addReplyBulkLongLong(redisClient *c, long long ll);
+
 #endif

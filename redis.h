@@ -74,6 +74,10 @@
 /* 对象编码 */
 #define REDIS_ENCODING_RAW 0     /* Raw representation */
 #define REDIS_ENCODING_INT 1     /* Encoded as integer */
+#define REDIS_ENCODING_HT 2      /* Encoded as hash table */
+#define REDIS_ENCODING_ZIPMAP 3  /* Encoded as zipmap */
+#define REDIS_ENCODING_ZIPLIST 5 /* Encoded as ziplist */
+#define REDIS_ENCODING_SKIPLIST 7  /* Encoded as skiplist */
 #define REDIS_ENCODING_EMBSTR 8  /* Embedded sds string encoding */
 
 /* 命令标志 */
@@ -90,6 +94,10 @@
 #define REDIS_CMD_STALE 1024                /* "t" flag */
 #define REDIS_CMD_SKIP_MONITOR 2048         /* "M" flag */
 #define REDIS_CMD_ASKING 4096               /* "k" flag */
+
+/* Zip structure related defaults */
+#define REDIS_HASH_MAX_ZIPLIST_VALUE 64
+#define REDIS_HASH_MAX_ZIPLIST_ENTRIES 512  // 压缩链表最多能有512项
 
 /* Command call flags, see call() function */
 #define REDIS_CALL_NONE 0
@@ -225,6 +233,8 @@ struct redisServer {
 
     time_t unixtime; // 记录时间
     long long mstime; // 这个精度要高一些
+    size_t hash_max_ziplist_value;
+    size_t hash_max_ziplist_entries;
 };
 
 
@@ -269,6 +279,24 @@ struct sharedObjectsStruct {
             *mbulkhdr[REDIS_SHARED_BULKHDR_LEN], /* "*<value>\r\n" */
     *bulkhdr[REDIS_SHARED_BULKHDR_LEN];  /* "$<value>\r\n" */
 };
+
+//
+// hashTypeIterator 哈希对象的迭代器
+//
+typedef struct {
+    // 被迭代的哈希对象
+    robj *subject;
+    // 哈希对象的编码
+    int encoding;
+    // 域指针和值指针
+    unsigned char *fptr, *vptr;
+    // 字典迭代器和指向当前迭代字典节点的指针,在迭代HT编码的哈希对象时使用
+    dictIterator *di;
+    dictEntry *de;
+} hashTypeIterator;
+
+#define REDIS_HASH_KEY 1
+#define REDIS_HASH_VALUE 2
 
 /* api */
 int processCommand(redisClient *c);

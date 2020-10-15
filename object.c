@@ -1,6 +1,7 @@
 /* Redis Object implementation. */
 #include "object.h"
 #include "util.h"
+#include "ziplist.h"
 #include "networking.h"
 #include <unistd.h>
 #include <math.h>
@@ -335,5 +336,15 @@ robj *createStringObjectFromLongLong(long long value) {
             o = createObject(REDIS_STRING, sdsfromlonglong(value));
         }
     }
+    return o;
+}
+
+/*
+ * 创建一个ZIPLIST编码的哈希对象
+ */
+robj *createHashObject(void) {
+    unsigned char *zl = ziplistNew();
+    robj *o = createObject(REDIS_HASH, zl);
+    o->encoding = REDIS_ENCODING_ZIPLIST;
     return o;
 }

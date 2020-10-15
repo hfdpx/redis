@@ -711,3 +711,23 @@ void addReplyMultiBulkLen(redisClient *c, long length) {
     else
         addReplyLongLongWithPrefix(c, length, '*');
 }
+
+/*
+ * 返回一个c缓冲区作为回复
+ */
+void addReplyBulkCBuffer(redisClient *c, void *p, size_t len) {
+    addReplyLongLongWithPrefix(c, len, '$');
+    addReplyString(c, p, len);
+    addReply(c, shared.crlf);
+}
+
+/*
+ * 返回一个long long值作为回复
+ */
+void addReplyBulkLongLong(redisClient *c, long long ll) {
+    char buf[64];
+    int len;
+
+    len = ll2string(buf, 64, ll);
+    addReplyBulkCBuffer(c, buf, len);
+}
